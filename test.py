@@ -8,8 +8,8 @@ from pikpakapi import PikPakApi
 
 async def test():
     client = PikPakApi(
-        username="your_username",
-        password="your_password",
+        username="w8o95@finacenter.com",
+        password="3acbx2w0",
         httpx_client_args={
             "proxy": "http://127.0.0.1:1081",
             "transport": httpx.AsyncHTTPTransport(retries=3),
@@ -22,7 +22,7 @@ async def test():
     print(
         json.dumps(
             await client.offline_download(
-                "magnet:?xt=urn:btih:42b46b971332e776e8b290ed34632d5c81a1c47c"
+                "magnet:?xt=urn:btih:65AE1D15D9990763103B61C8ED2193421943D328"
             ),
             indent=4,
         )

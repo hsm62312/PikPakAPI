@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+
 from .PikpakException import PikpakException
 from .enums import DownloadStatus
 
@@ -85,21 +86,27 @@ class PikPakApi:
         return headers
 
     async def _make_request(
-        self, method: str, url: str, data=None, params=None
+        self, method: str, url: str, data=None, params=None, headers=None, retry=0 
     ) -> Dict[str, Any]:
         async with httpx.AsyncClient(**self.httpx_client_args) as client:
             response = await client.request(
-                method, url, json=data, params=params, headers=self.get_headers()
+                method,
+                url,
+                json=data,
+                params=params,
+                headers=self.get_headers() if not headers else headers,
             )
             json_data = response.json()
 
-            if "error" in json_data and json_data["error_code"] == 16:
-                await self.refresh_access_token()
-                return await self._make_request(method, url, data, params)
-
             if "error" in json_data:
-                raise PikpakException(f"{json_data['error_description']}")
-
+                if json_data.get("error_code") == 16:
+                    await self.refresh_access_token()
+                    return await self._make_request(method, url, data, params)
+                else:
+                    while retry <= 3:
+                        retry += 1
+                        await self._make_request(method, url, data, params, headers, retry)
+                    raise PikpakException(f"{json_data['error_description']}")
             return json_data
 
     async def _request_get(
@@ -113,8 +120,9 @@ class PikPakApi:
         self,
         url: str,
         data: dict = None,
+        headers: dict = None,
     ):
-        return await self._make_request("post", url, data=data)
+        return await self._make_request("post", url, data=data, headers=headers)
 
     async def _request_patch(
         self,
@@ -152,18 +160,35 @@ class PikPakApi:
         }
         self.encoded_token = b64encode(json.dumps(token_data).encode()).decode()
 
+    async def captcha_init(self) -> None:
+        url = f"https://{PikPakApi.PIKPAK_USER_HOST}/v1/shield/captcha/init"
+        params = {
+            "client_id": "YUMx5nI8ZU8Ap8pm",
+            "action": "POST:/v1/auth/signin",
+            "device_id": self.device_id,
+            "meta": {"email": self.username},
+        }
+        return await self._request_post(url, data=params)
+
     async def login(self) -> None:
         """
         Login to PikPak
         """
-        login_url = f"https://{PikPakApi.PIKPAK_USER_HOST}/v1/auth/signin"
+        login_url = f"https://{PikPakApi.PIKPAK_USER_HOST}/v1/auth/token"
         login_data = {
             "client_id": self.CLIENT_ID,
             "client_secret": self.CLIENT_SECRET,
             "password": self.password,
             "username": self.username,
+            "grant_type": "password",
         }
-        user_info = await self._request_post(login_url, login_data)
+        user_info = await self._request_post(
+            login_url,
+            login_data,
+            {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
         self.access_token = user_info["access_token"]
         self.refresh_token = user_info["refresh_token"]
         self.user_id = user_info["sub"]
@@ -297,8 +322,9 @@ class PikPakApi:
             "type": "offline",
             "thumbnail_size": "SIZE_SMALL",
             "limit": size,
-            "next_page_token": next_page_token,
+            "page_token": next_page_token,
             "filters": json.dumps({"phase": {"in": ",".join(phase)}}),
+            "with": "reference_resource",
         }
         result = await self._request_get(list_url, list_data)
         return result
@@ -377,7 +403,7 @@ class PikPakApi:
             "id": task_id,
         }
         try:
-            result = await self._request_get(list_url, list_data)
+            result = await self._request_post(list_url, list_data)
             return result
         except Exception as e:
             raise PikpakException(f"重试离线下载任务失败: {task_id}. {e}")
@@ -582,15 +608,16 @@ class PikPakApi:
             result = await self.file_batch_copy(ids=from_ids, to_parent_id=to_parent_id)
         return result
 
-    async def get_download_url(self, id: str) -> Dict[str, Any]:
+    async def get_download_url(self, file_id: str) -> Dict[str, Any]:
         """
         id: str - 文件id
 
-        获取文件的下载链接
-        返回结果中的 web_content_link 字段
+        Returns the file details data.
+        1. Use `medias[0][link][url]` for streaming with high speed in streaming services or tools.
+        2. Use `web_content_link` to download the file
         """
         result = await self._request_get(
-            url=f"https://{self.PIKPAK_API_HOST}/drive/v1/files/{id}?usage=FETCH",
+            url=f"https://{self.PIKPAK_API_HOST}/drive/v1/files/{file_id}?_magic=2021&thumbnail_size=SIZE_LARGE",
         )
         return result
 
@@ -722,4 +749,24 @@ class PikPakApi:
         result = await self._request_get(
             url=f"https://{self.PIKPAK_API_HOST}/drive/v1/about",
         )
+        return result
+
+    async def get_invite_code(self):
+        result = await self._request_get(
+            url=f"https://{self.PIKPAK_API_HOST}/vip/v1/activity/inviteCode",
+        )
+        return result["code"]
+    
+    async def vip_info(self):
+        result = await self._request_get(
+            url=f"https://{self.PIKPAK_API_HOST}/drive/v1/privilege/vip",
+        )
+        return result
+
+    async def get_transfer_quota(self) -> Dict[str, Any]:
+        """
+        Get transfer quota
+        """
+        url = f"https://{self.PIKPAK_API_HOST}/vip/v1/quantity/list?type=transfer"
+        result = await self._request_get(url)
         return result
